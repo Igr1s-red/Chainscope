@@ -1,0 +1,81 @@
+# chainscope supply chain policy — known-good registry CIDRs
+#
+# Network connections from package managers to IPs in these ranges are expected
+# and flagged at lower severity. Connections outside these ranges trigger HIGH alerts.
+#
+# CDN IP ranges change periodically. Verify against the registry's own published
+# IP list before deploying in a high-security environment:
+#   PyPI:     https://status.python.org
+#   npm:      https://api.cloudflare.com/client/v4/ips
+#   crates.io: https://ip-ranges.amazonaws.com/ip-ranges.json  (CloudFront)
+#   RubyGems: https://rubygems.org (Fastly CDN)
+
+registries:
+  pypi:
+    name: "PyPI"
+    hosts:
+      - "pypi.org"
+      - "files.pythonhosted.org"
+      - "upload.pypi.org"
+    cidrs:
+      - "151.101.0.0/16"    # Fastly CDN (primary PyPI range)
+      - "146.75.0.0/16"     # Fastly alternate
+
+  npm:
+    name: "npm registry"
+    hosts:
+      - "registry.npmjs.org"
+      - "registry.yarnpkg.com"
+    cidrs:
+      - "104.16.0.0/13"     # Cloudflare
+      - "104.24.0.0/14"     # Cloudflare
+      - "172.64.0.0/13"     # Cloudflare
+      - "2606:4700::/32"    # Cloudflare IPv6
+
+  cargo:
+    name: "crates.io"
+    hosts:
+      - "crates.io"
+      - "static.crates.io"
+      - "index.crates.io"
+    cidrs:
+      - "13.32.0.0/15"      # AWS CloudFront
+      - "13.35.0.0/16"      # AWS CloudFront
+      - "54.239.128.0/18"   # AWS CloudFront
+      - "52.84.0.0/15"      # AWS CloudFront
+
+  rubygems:
+    name: "RubyGems"
+    hosts:
+      - "rubygems.org"
+      - "index.rubygems.org"
+      - "api.rubygems.org"
+    cidrs:
+      - "151.101.0.0/16"    # Fastly CDN
+
+  debian_apt:
+    name: "Debian APT"
+    hosts:
+      - "deb.debian.org"
+      - "security.debian.org"
+      - "ftp.debian.org"
+    cidrs:
+      - "130.89.0.0/16"     # TU Delft / Debian primary mirrors
+
+  kali_apt:
+    name: "Kali APT"
+    hosts:
+      - "http.kali.org"
+      - "archive-4.kali.org"
+    cidrs:
+      - "192.99.200.0/24"   # OVH (Kali mirror)
+      - "151.101.0.0/16"    # Fastly (Kali CDN)
+
+  ubuntu_apt:
+    name: "Ubuntu APT"
+    hosts:
+      - "archive.ubuntu.com"
+      - "security.ubuntu.com"
+    cidrs:
+      - "185.125.190.0/24"  # Ubuntu CDN
+      - "91.189.88.0/21"    # Canonical
