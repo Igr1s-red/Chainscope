@@ -232,4 +232,9 @@ type Alert struct {
 	Rule        string
 	Description string
 	Severity    Severity
+	// Container attribution — populated in userspace from /proc after event arrival.
+	ContainerID string
+	Runtime     string
+	PodName     string
+	Namespace   string
 }

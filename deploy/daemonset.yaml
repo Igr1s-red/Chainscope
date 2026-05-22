@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: chainscope
+  namespace: security
+  labels:
+    app: chainscope
+spec:
+  selector:
+    matchLabels:
+      app: chainscope
+  template:
+    metadata:
+      labels:
+        app: chainscope
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      # hostPID is required so /proc/<pid>/cgroup and /proc/<pid>/environ
+      # are readable for host PIDs, enabling container attribution.
+      hostPID: true
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      containers:
+        - name: chainscope
+          image: chainscope:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - -policy=/etc/chainscope/policy.yaml
+            - -metrics-addr=:9090
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          securityContext:
+            privileged: true          # required for BPF_PROG_LOAD and perf_event_open
+            capabilities:
+              add:
+                - BPF
+                - PERFMON
+                - SYS_RESOURCE
+          volumeMounts:
+            - name: btf
+              mountPath: /sys/kernel/btf
+              readOnly: true
+            - name: proc
+              mountPath: /proc
+              readOnly: true
+            - name: config
+              mountPath: /etc/chainscope
+              readOnly: true
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: btf
+          hostPath:
+            path: /sys/kernel/btf
+            type: Directory
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: config
+          configMap:
+            name: chainscope-config
+      serviceAccountName: chainscope
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chainscope
+  namespace: security
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chainscope-config
+  namespace: security
+data:
+  policy.yaml: |
+    # Override with your own policy — see policy/default.yaml in the repo.
+    version: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chainscope-metrics
+  namespace: security
+  labels:
+    app: chainscope
+spec:
+  selector:
+    app: chainscope
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  clusterIP: None   # headless — Prometheus scrapes each pod individually

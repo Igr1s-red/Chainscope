@@ -55,6 +55,10 @@ type jsonAlert struct {
 	RootComm    string `json:"root_comm"`
 	Phase       string `json:"phase"`
 	Description string `json:"description"`
+	ContainerID string `json:"container_id,omitempty"`
+	Runtime     string `json:"runtime,omitempty"`
+	PodName     string `json:"pod_name,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
 }
 
 type jsonEvent struct {
@@ -84,6 +88,10 @@ func (w *Writer) writeAlertJSON(a *types.Alert) {
 		RootComm:    evt.RootCommStr(),
 		Phase:       types.Phase(evt.Phase).String(),
 		Description: a.Description,
+		ContainerID: a.ContainerID,
+		Runtime:     a.Runtime,
+		PodName:     a.PodName,
+		Namespace:   a.Namespace,
 	}
 	b, _ := json.Marshal(rec)
 	fmt.Fprintf(w.out, "%s\n", b)
@@ -92,11 +100,19 @@ func (w *Writer) writeAlertJSON(a *types.Alert) {
 func (w *Writer) writeAlertText(a *types.Alert) {
 	ts := time.Now().Format("15:04:05.000")
 	color := severityColor(a.Severity)
-	fmt.Fprintf(w.out, "%s[%s %s] %s%s\n",
+	suffix := ""
+	if a.ContainerID != "" {
+		suffix = fmt.Sprintf(" [%s/%s]", a.Runtime, a.ContainerID)
+		if a.PodName != "" {
+			suffix = fmt.Sprintf(" [%s pod=%s]", a.Runtime, a.PodName)
+		}
+	}
+	fmt.Fprintf(w.out, "%s[%s %s] %s%s%s\n",
 		color,
 		ts,
 		a.Severity.String(),
 		a.Description,
+		suffix,
 		colorReset,
 	)
 }

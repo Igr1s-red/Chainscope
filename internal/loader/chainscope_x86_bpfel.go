@@ -41,10 +41,42 @@ func loadChainscope() (*ebpf.CollectionSpec, error) {
 //	*chainscopeMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
+//
+// When obj is *chainscopeObjects and the compiled BPF object predates the
+// drop_count map (i.e. make generate hasn't been run yet), DropCount is set
+// to nil and all other maps/programs are loaded normally.
 func loadChainscopeObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
 	spec, err := loadChainscope()
 	if err != nil {
 		return err
+	}
+
+	// Backward-compatible load: if the compiled object doesn't have drop_count
+	// (older .o file), fall back to loading without it and leave DropCount nil.
+	if co, ok := obj.(*chainscopeObjects); ok {
+		if _, hasDropCount := spec.Maps["drop_count"]; !hasDropCount {
+			type legacyMaps struct {
+				EnvScratch *ebpf.Map `ebpf:"env_scratch"`
+				Events     *ebpf.Map `ebpf:"events"`
+				ProcTree   *ebpf.Map `ebpf:"proc_tree"`
+				SavedExecs *ebpf.Map `ebpf:"saved_execs"`
+			}
+			type legacyObjects struct {
+				chainscopePrograms
+				legacyMaps
+			}
+			var legacy legacyObjects
+			if err := spec.LoadAndAssign(&legacy, opts); err != nil {
+				return err
+			}
+			co.chainscopePrograms = legacy.chainscopePrograms
+			co.EnvScratch         = legacy.legacyMaps.EnvScratch
+			co.Events             = legacy.legacyMaps.Events
+			co.ProcTree           = legacy.legacyMaps.ProcTree
+			co.SavedExecs         = legacy.legacyMaps.SavedExecs
+			co.DropCount          = nil
+			return nil
+		}
 	}
 
 	return spec.LoadAndAssign(obj, opts)
@@ -78,6 +110,7 @@ type chainscopeProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type chainscopeMapSpecs struct {
+	DropCount  *ebpf.MapSpec `ebpf:"drop_count"`
 	EnvScratch *ebpf.MapSpec `ebpf:"env_scratch"`
 	Events     *ebpf.MapSpec `ebpf:"events"`
 	ProcTree   *ebpf.MapSpec `ebpf:"proc_tree"`
@@ -102,7 +135,10 @@ func (o *chainscopeObjects) Close() error {
 // chainscopeMaps contains all maps after they have been loaded into the kernel.
 //
 // It can be passed to loadChainscopeObjects or ebpf.CollectionSpec.LoadAndAssign.
+// DropCount is nil when running against a pre-drop-counter compiled object
+// (i.e. before `make generate` was run after the drop_count map was added).
 type chainscopeMaps struct {
+	DropCount  *ebpf.Map `ebpf:"drop_count"`
 	EnvScratch *ebpf.Map `ebpf:"env_scratch"`
 	Events     *ebpf.Map `ebpf:"events"`
 	ProcTree   *ebpf.Map `ebpf:"proc_tree"`
@@ -110,7 +146,9 @@ type chainscopeMaps struct {
 }
 
 func (m *chainscopeMaps) Close() error {
+	// DropCount may be nil on older compiled objects — (*ebpf.Map).Close() is nil-safe.
 	return _ChainscopeClose(
+		m.DropCount,
 		m.EnvScratch,
 		m.Events,
 		m.ProcTree,

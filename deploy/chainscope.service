@@ -1,0 +1,34 @@
+[Unit]
+Description=chainscope eBPF supply chain security monitor
+Documentation=https://github.com/chainscope/chainscope
+After=network.target
+ConditionPathExists=/sys/kernel/btf/vmlinux
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/chainscope \
+    -policy /etc/chainscope/policy.yaml \
+    -metrics-addr :9090
+
+Restart=on-failure
+RestartSec=5s
+
+# BPF requires these three capabilities; we drop everything else.
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE
+
+# Harden the service without breaking BPF.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false     # BPF needs /dev/null and perf fd's
+ReadOnlyPaths=/
+ReadWritePaths=/var/log/chainscope /etc/chainscope
+NoNewPrivileges=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chainscope
+
+[Install]
+WantedBy=multi-user.target

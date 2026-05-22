@@ -8,18 +8,23 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/chainscope/chainscope/internal/enricher"
 	"github.com/chainscope/chainscope/internal/types"
 )
 
 // Node represents one process in the tracked supply-chain subtree.
 type Node struct {
-	PID      uint32
-	PPID     uint32
-	RootPID  uint32
-	Comm     string
-	RootComm string
-	Cmdline  string
-	Phase    types.Phase
+	PID         uint32
+	PPID        uint32
+	RootPID     uint32
+	Comm        string
+	RootComm    string
+	Cmdline     string
+	Phase       types.Phase
+	ContainerID string
+	Runtime     string
+	PodName     string
+	Namespace   string
 }
 
 // Tree is a concurrent map of pid → Node for all tracked processes.
@@ -35,18 +40,30 @@ func New() *Tree {
 // Add inserts or updates a node from an exec event.
 func (t *Tree) Add(evt *types.ChainEvent) {
 	cmdline := readCmdline(evt.Pid)
+	ci := enricher.Enrich(evt.Pid)
 	node := &Node{
-		PID:      evt.Pid,
-		PPID:     evt.Ppid,
-		RootPID:  evt.RootPid,
-		Comm:     evt.CommStr(),
-		RootComm: evt.RootCommStr(),
-		Cmdline:  cmdline,
-		Phase:    types.Phase(evt.Phase),
+		PID:         evt.Pid,
+		PPID:        evt.Ppid,
+		RootPID:     evt.RootPid,
+		Comm:        evt.CommStr(),
+		RootComm:    evt.RootCommStr(),
+		Cmdline:     cmdline,
+		Phase:       types.Phase(evt.Phase),
+		ContainerID: ci.ContainerID,
+		Runtime:     ci.Runtime,
+		PodName:     ci.PodName,
+		Namespace:   ci.Namespace,
 	}
 	t.mu.Lock()
 	t.nodes[evt.Pid] = node
 	t.mu.Unlock()
+}
+
+// Size returns the number of tracked processes.
+func (t *Tree) Size() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.nodes)
 }
 
 // Remove cleans up on process exit.

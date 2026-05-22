@@ -1,0 +1,87 @@
+# chainscope GitLab CI include template
+#
+# Monitors a build command for supply chain attacks using eBPF.
+# Include this file and use the .chainscope-scan job template.
+#
+# Usage in your project's .gitlab-ci.yml:
+#
+#   include:
+#     - project: 'your-org/chainscope'
+#       file: '.gitlab/chainscope.yml'
+#
+#   npm-install:
+#     extends: .chainscope-scan
+#     variables:
+#       CHAINSCOPE_COMMAND: "npm ci"
+#       CHAINSCOPE_MIN_SEVERITY: "high"
+#
+# Requirements:
+#   - Runner must use the shell executor (not Docker) OR a privileged Docker
+#     executor with --pid=host and /sys/kernel/btf mounted.
+#   - The runner host needs Linux 5.8+ with BTF and CAP_BPF / CAP_PERFMON.
+#   - chainscope binary must be installed on the runner at /usr/local/bin/chainscope.
+
+.chainscope-scan:
+  stage: test
+  variables:
+    CHAINSCOPE_COMMAND: ""
+    CHAINSCOPE_MIN_SEVERITY: "high"
+    CHAINSCOPE_POLICY: ""
+    CHAINSCOPE_SARIF: "chainscope-results.sarif"
+    CHAINSCOPE_BIN: "/usr/local/bin/chainscope"
+
+  before_script:
+    - |
+      if [ ! -x "$CHAINSCOPE_BIN" ]; then
+        echo "chainscope not found at $CHAINSCOPE_BIN — installing..."
+        LATEST=$(curl -fsSL https://api.github.com/repos/chainscope/chainscope/releases/latest \
+          | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+        ARCH=$(uname -m)
+        curl -fsSL "https://github.com/chainscope/chainscope/releases/download/${LATEST}/chainscope_linux_${ARCH}" \
+          -o "$CHAINSCOPE_BIN"
+        chmod +x "$CHAINSCOPE_BIN"
+      fi
+
+  script:
+    - |
+      POLICY_FLAG=""
+      if [ -n "$CHAINSCOPE_POLICY" ]; then
+        POLICY_FLAG="-policy $CHAINSCOPE_POLICY"
+      fi
+      sudo "$CHAINSCOPE_BIN" ci \
+        $POLICY_FLAG \
+        -min-sev "$CHAINSCOPE_MIN_SEVERITY" \
+        -sarif "$CHAINSCOPE_SARIF" \
+        -- $CHAINSCOPE_COMMAND
+
+  artifacts:
+    when: always
+    paths:
+      - "$CHAINSCOPE_SARIF"
+    reports:
+      # GitLab 15.0+ supports SAST reports in SARIF format.
+      sast: "$CHAINSCOPE_SARIF"
+    expire_in: 7 days
+
+  allow_failure: false
+
+
+# Convenience job template for npm projects.
+.chainscope-npm:
+  extends: .chainscope-scan
+  variables:
+    CHAINSCOPE_COMMAND: "npm ci"
+
+
+# Convenience job template for Python projects.
+.chainscope-pip:
+  extends: .chainscope-scan
+  variables:
+    CHAINSCOPE_COMMAND: "pip install -r requirements.txt"
+
+
+# Convenience job template for Rust/cargo projects.
+.chainscope-cargo:
+  extends: .chainscope-scan
+  variables:
+    CHAINSCOPE_COMMAND: "cargo build --release"

@@ -1,0 +1,67 @@
+name: chainscope supply-chain scan
+description: >
+  Run chainscope to monitor a build command for supply chain attacks.
+  Uploads a SARIF report to GitHub Advanced Security when results are found.
+
+inputs:
+  command:
+    description: Build command to monitor (e.g. "npm install", "pip install -r requirements.txt")
+    required: true
+  policy:
+    description: Path to chainscope policy YAML (relative to repo root)
+    required: false
+    default: ""
+  min-severity:
+    description: Minimum severity that causes the step to fail (low|medium|high|critical)
+    required: false
+    default: "high"
+  sarif-file:
+    description: Path where the SARIF report will be written
+    required: false
+    default: "chainscope-results.sarif"
+  chainscope-version:
+    description: chainscope release tag to download (e.g. v0.1.0)
+    required: false
+    default: "latest"
+
+outputs:
+  sarif-file:
+    description: Path to the written SARIF file
+    value: ${{ inputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install chainscope
+      shell: bash
+      run: |
+        set -euo pipefail
+        VERSION="${{ inputs.chainscope-version }}"
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(curl -fsSL https://api.github.com/repos/chainscope/chainscope/releases/latest \
+            | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+        fi
+        ARCH=$(uname -m)
+        URL="https://github.com/chainscope/chainscope/releases/download/${VERSION}/chainscope_linux_${ARCH}"
+        curl -fsSL "$URL" -o /tmp/chainscope
+        chmod +x /tmp/chainscope
+        echo "Installed chainscope $VERSION"
+
+    - name: Run chainscope scan
+      shell: bash
+      env:
+        POLICY_FLAG: ${{ inputs.policy != '' && format('-policy {0}', inputs.policy) || '' }}
+      run: |
+        set -euo pipefail
+        sudo /tmp/chainscope ci \
+          $POLICY_FLAG \
+          --min-sev "${{ inputs.min-severity }}" \
+          --sarif "${{ inputs.sarif-file }}" \
+          -- ${{ inputs.command }}
+
+    - name: Upload SARIF to GitHub Security tab
+      if: always() && hashFiles(inputs.sarif-file) != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: chainscope

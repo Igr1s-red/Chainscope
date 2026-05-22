@@ -57,6 +57,16 @@ struct {
 	__type(value, char[32]);
 } env_scratch SEC(".maps");
 
+// Single-entry counter for ring buffer overflow drops.
+// Incremented by reserve_or_drop() when bpf_ringbuf_reserve returns NULL.
+// Requires `make generate && make build` to take effect (see chainscope.h).
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key,   __u32);
+	__type(value, __u64);
+} drop_count SEC(".maps");
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -303,6 +313,21 @@ static __always_inline void zero_event(struct chain_event *evt)
 	__builtin_memset(evt, 0, sizeof(*evt));
 }
 
+// reserve_or_drop tries to reserve a ring buffer slot.
+// On failure it increments the drop_count map so userspace can surface the
+// drop in metrics/logs rather than losing it silently.
+static __always_inline struct chain_event *reserve_or_drop(void)
+{
+	struct chain_event *evt = reserve_or_drop();
+	if (!evt) {
+		__u32 key = 0;
+		__u64 *cnt = bpf_map_lookup_elem(&drop_count, &key);
+		if (cnt)
+			__sync_fetch_and_add(cnt, 1);
+	}
+	return evt;
+}
+
 static __always_inline void emit(struct chain_event *evt, __u8 type, __u8 phase,
 				 __u8 severity, __u32 pid, __u32 ppid,
 				 struct proc_info *info)
@@ -363,7 +388,7 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx)
 	__builtin_memcpy(info.comm, base, TASK_COMM_LEN);
 	bpf_map_update_elem(&proc_tree, &pid, &info, BPF_ANY);
 
-	struct chain_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+	struct chain_event *evt = reserve_or_drop();
 	if (!evt)
 		return 0;
 
@@ -484,7 +509,7 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 	}
 
-	struct chain_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+	struct chain_event *evt = reserve_or_drop();
 	if (!evt)
 		return 0;
 
@@ -517,7 +542,7 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx)
 	if (info->phase == PHASE_COMPILE || info->phase == PHASE_LINK)
 		sev = SEV_CRITICAL;
 
-	struct chain_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+	struct chain_event *evt = reserve_or_drop();
 	if (!evt)
 		return 0;
 
@@ -556,7 +581,7 @@ int trace_memfd_create(struct trace_event_raw_sys_enter *ctx)
 	if (!info)
 		return 0;
 
-	struct chain_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+	struct chain_event *evt = reserve_or_drop();
 	if (!evt)
 		return 0;
 
@@ -580,7 +605,7 @@ int trace_execveat(struct trace_event_raw_sys_enter *ctx)
 	if (!((int)ctx->args[4] & AT_EMPTY_PATH))
 		return 0;
 
-	struct chain_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+	struct chain_event *evt = reserve_or_drop();
 	if (!evt)
 		return 0;
 
@@ -610,7 +635,7 @@ int trace_fchmodat(struct trace_event_raw_sys_enter *ctx)
 	char path[PATH_LEN] = {};
 	bpf_probe_read_user_str(path, sizeof(path), (const char *)ctx->args[1]);
 
-	struct chain_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+	struct chain_event *evt = reserve_or_drop();
 	if (!evt)
 		return 0;
 
@@ -639,7 +664,7 @@ int trace_bpf(struct trace_event_raw_sys_enter *ctx)
 	if (!info)
 		return 0;
 
-	struct chain_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+	struct chain_event *evt = reserve_or_drop();
 	if (!evt)
 		return 0;
 
@@ -667,7 +692,7 @@ int trace_getaddrinfo(struct pt_regs *ctx)
 	if (!node)
 		return 0;
 
-	struct chain_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
+	struct chain_event *evt = reserve_or_drop();
 	if (!evt)
 		return 0;
 

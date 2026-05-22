@@ -125,6 +125,22 @@ func (l *Loader) SeedPID(pid uint32, comm string) error {
 	return l.objs.ProcTree.Put(&pid, &info)
 }
 
+// DroppedEvents returns the cumulative count of events dropped because the
+// ring buffer was full at the time of the BPF program's reserve call.
+// Returns 0 if the loaded BPF object predates drop_count support (run
+// `make generate && make build` to enable accurate drop tracking).
+func (l *Loader) DroppedEvents() uint64 {
+	if l.objs.DropCount == nil {
+		return 0
+	}
+	var key uint32
+	var val uint64
+	if err := l.objs.DropCount.Lookup(&key, &val); err != nil {
+		return 0
+	}
+	return val
+}
+
 // Close detaches all hooks and frees BPF objects.
 func (l *Loader) Close() {
 	if l.rd != nil {

@@ -230,24 +230,153 @@ No kernel recompilation needed.
 2. Add a new constant to `bpf/chainscope.h` and `internal/types/types.go`
 3. Attach the hook in `internal/loader/loader.go` and run `make generate && make build`
 
+## Enterprise features
+
+### Container attribution
+
+Every alert automatically includes the container context of the offending process.
+No extra flags needed — chainscope reads `/proc/<pid>/cgroup` to detect Docker,
+containerd, Podman, and CRI-O containers, and reads `POD_NAMESPACE` / `HOSTNAME`
+from `/proc/<pid>/environ` for Kubernetes pods.
+
+Text output suffix:
+```
+[07:12:05.009 CRITICAL] bash pipe+shell attack [containerd pod=my-build-pod]
+```
+
+JSON output additions:
+```json
+{"container_id":"a3f2b1c4d5e6","runtime":"containerd","pod_name":"my-build-pod","namespace":"ci"}
+```
+
+### SARIF output (GitHub Advanced Security)
+
+Write a SARIF 2.1.0 report for import into the GitHub Security tab:
+
+```bash
+sudo ./chainscope -sarif results.sarif
+# or in CI mode:
+sudo ./chainscope ci -sarif results.sarif -- npm ci
+```
+
+**GitHub Actions composite action** (`.github/actions/chainscope/action.yml`):
+
+```yaml
+- uses: ./.github/actions/chainscope
+  with:
+    command: npm ci
+    min-severity: high
+    sarif-file: chainscope-results.sarif
+```
+
+Alerts appear directly in the pull request's **Security → Code scanning** tab.
+Severity mapping: CRITICAL/HIGH → `error`, MEDIUM → `warning`, LOW/INFO → `note`.
+CVSS scores: CRITICAL=9.0, HIGH=7.0, MEDIUM=5.0, LOW=3.0.
+
+### Prometheus metrics
+
+```bash
+sudo ./chainscope -metrics-addr :9090
+# or in CI mode:
+sudo ./chainscope ci -metrics-addr :9090 -- pip install .
+```
+
+Endpoints:
+- `GET /metrics` — Prometheus text format
+- `GET /healthz` — returns `ok` (for k8s liveness/readiness probes)
+
+Metrics exposed:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `chainscope_events_total` | counter | Total eBPF events processed |
+| `chainscope_proctree_size` | gauge | Currently tracked processes |
+| `chainscope_alerts_total{rule,severity}` | counter | Alerts per rule + severity |
+
+Example scrape config for Prometheus:
+```yaml
+scrape_configs:
+  - job_name: chainscope
+    static_configs:
+      - targets: ['localhost:9090']
+```
+
+## Deployment
+
+### Systemd (bare-metal / VM)
+
+```bash
+sudo cp chainscope /usr/local/bin/
+sudo mkdir -p /etc/chainscope
+sudo cp policy/default.yaml /etc/chainscope/policy.yaml
+sudo cp deploy/chainscope.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now chainscope
+```
+
+The unit runs with only `CAP_BPF`, `CAP_PERFMON`, `CAP_SYS_RESOURCE` — not full root.
+
+### Kubernetes DaemonSet
+
+```bash
+kubectl create namespace security
+kubectl apply -f deploy/daemonset.yaml
+```
+
+Each node runs one chainscope pod with `hostPID: true` (required to read
+`/proc/<host-pid>/cgroup` for container attribution) and `privileged: true`
+(required for BPF). The pod exposes `:9090/metrics` with the Prometheus
+annotations set for auto-scraping.
+
+### Docker
+
+The image must be built on the **target kernel** (or with `--privileged` + the
+host's `/sys/kernel/btf` bind-mounted) because `bpf/vmlinux.h` is generated
+at build time from the running kernel's BTF:
+
+```bash
+docker build \
+  --privileged \
+  -v /sys/kernel/btf:/sys/kernel/btf:ro \
+  -t chainscope:latest .
+
+docker run --rm --privileged \
+  --pid=host \
+  -v /sys/kernel/btf:/sys/kernel/btf:ro \
+  -v /proc:/proc:ro \
+  -p 9090:9090 \
+  chainscope:latest
+```
+
+`--pid=host` is required for `/proc/<pid>/cgroup` reads (container attribution).
+
 ## Files
 
 ```
 chainscope/
 ├── bpf/
-│   ├── chainscope.h        # shared C/Go event struct + constants (520 bytes)
-│   └── chainscope.c        # all eBPF programs (tracepoints + uprobe)
+│   ├── chainscope.h          # shared C/Go event struct + constants (520 bytes)
+│   └── chainscope.c          # all eBPF programs (tracepoints + uprobe)
 ├── internal/
 │   ├── loader/
-│   │   ├── gen.go          # //go:generate bpf2go directive
-│   │   └── loader.go       # loads BPF, attaches hooks, SeedPID for CI mode
-│   ├── types/types.go      # Go mirror of chain_event + all constants
-│   ├── detector/detector.go# all alert rules
-│   ├── baseline/baseline.go# learn/enforce profile
-│   ├── output/output.go    # coloured text + JSON formatting
-│   ├── policy/policy.go    # YAML registry allow-list
-│   └── proctree/proctree.go# userspace ancestry cache
-├── cmd/chainscope/main.go  # CLI: monitor / ci / --learn / --enforce
-├── policy/default.yaml     # bundled registry CIDR allow-list
+│   │   ├── gen.go            # //go:generate bpf2go directive
+│   │   └── loader.go         # loads BPF, attaches hooks, SeedPID for CI mode
+│   ├── types/types.go        # Go mirror of chain_event + all constants
+│   ├── detector/detector.go  # all alert rules
+│   ├── baseline/baseline.go  # learn/enforce profile
+│   ├── enricher/enricher.go  # /proc-based container attribution
+│   ├── metrics/metrics.go    # Prometheus metrics HTTP server
+│   ├── output/
+│   │   ├── output.go         # coloured text + JSON formatting
+│   │   └── sarif.go          # SARIF 2.1.0 writer
+│   ├── policy/policy.go      # YAML registry allow-list
+│   └── proctree/proctree.go  # userspace ancestry cache + container context
+├── cmd/chainscope/main.go    # CLI: monitor / ci / --learn / --enforce
+├── deploy/
+│   ├── chainscope.service    # systemd unit (CAP_BPF only, not root)
+│   └── daemonset.yaml        # Kubernetes DaemonSet + ServiceAccount + ConfigMap
+├── .github/actions/chainscope/action.yml  # GitHub Actions composite action
+├── Dockerfile                # multi-stage builder → debian:bookworm-slim
+├── policy/default.yaml       # bundled registry CIDR allow-list
 └── Makefile
 ```
